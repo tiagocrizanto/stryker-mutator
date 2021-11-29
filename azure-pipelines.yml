@@ -1,0 +1,121 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  solution: '**/*.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+
+parameters:
+  - name: reportType
+    type: string
+    default: 'html'
+  - name: projectFile
+    type: string
+    default: 'src/Application/Application.csproj;src/WebApi/WebApi.csproj;'
+  - name: ignoreMethods
+    type: string
+    default: "['ToString', 'ConfigureAwait']"
+  - name: unitTestsBasePath
+    type: string
+    default: 'UnitTests/'
+  - name: maxConcurrentTestRunners
+    type: string
+    default: '4'
+  - name: thresholdHigh
+    type: string
+    default: '70'
+  - name: thresholdLow
+    type: string
+    default: '50'
+  - name: thresholdBreak
+    type: string
+    default: '0'
+  - name: mutationLevel
+    type: string
+    default: 'Standard'
+  - name: dotnetVersion
+    type: string
+    default: '3.1.x'
+  - name: configFilePath
+    type: string
+    default: ''
+  - name: solutionPath
+    type: string
+    default: ''  
+  - name: runSolutionPathTest
+    type: boolean
+    default: false
+  - name: mutateExcludeClass
+    type: string
+    default: ''
+
+steps:
+  - task: NuGetToolInstaller@1
+
+  - task: NuGetCommand@2
+    inputs:
+      restoreSolution: '$(solution)'
+
+  - task: UseDotNet@2
+    displayName: Install DotNetCore ${{ parameters.dotnetVersion }} SDK
+    inputs:
+      version: ${{ parameters.dotnetVersion }}
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Install dotnet-stryker'
+    inputs:
+      command: custom
+      custom: tool
+      arguments: install dotnet-stryker --version 0.22.11 --tool-path $(Agent.BuildDirectory)/tools --ignore-failed-sources --add-source https://api.nuget.org/v3/index.json'
+
+  - ${{ if eq(parameters.runSolutionPathTest, false) }}: 
+    - task: Bash@3
+      displayName: 'Run dotnet-stryker - Project-File tests'
+      inputs:
+        failOnStderr: false
+        targetType: 'inline'
+        script: |
+          cd $(System.DefaultWorkingDirectory)/${{ parameters.unitTestsBasePath }}
+          
+          if [ ! -z "${{ parameters.configFilePath }}" ]; then
+            $(Agent.BuildDirectory)/tools/dotnet-stryker --config-file-path "${{ parameters.configFilePath }}"
+          else
+            echo "ignorando os metodos: ${{ parameters.ignoreMethods }}"
+            IFS=';' read -ra projetos <<< "${{ parameters.projectFile }}"
+            for i in "${projetos[@]}"
+            do
+                echo "executando teste de mutacao em: ${i}"
+                $(Agent.BuildDirectory)/tools/dotnet-stryker --project-file=$(System.DefaultWorkingDirectory)/${i} --reporters "['progress', '${{ parameters.reportType }}']" --ignore-methods  "${{ parameters.ignoreMethods }}" --max-concurrent-test-runners "${{ parameters.maxConcurrentTestRunners }}" --threshold-high "${{ parameters.thresholdHigh }}" --threshold-low "${{ parameters.thresholdLow }}" --threshold-break "${{ parameters.thresholdBreak }}" --mutation-level "${{ parameters.mutationLevel }}" --mutate "${{ parameters.mutateExcludeClass }}"
+            done
+          fi
+          
+  - ${{ if eq(parameters.runSolutionPathTest, true) }}: 
+    - task: Bash@3
+      displayName: 'Run dotnet-stryker - Solution-Path tests'
+      inputs:
+        failOnStderr: false
+        targetType: 'inline'
+        script: |
+          cd $(System.DefaultWorkingDirectory)/
+
+          if [ ! -z "${{ parameters.configFilePath }}" ]; then
+            $(Agent.BuildDirectory)/tools/dotnet-stryker --config-file-path "${{ parameters.configFilePath }}"
+          else
+            echo "ignorando os metodos: ${{ parameters.ignoreMethods }}"
+            
+            IFS=';' read -ra projetos <<< "${{ parameters.solutionPath }}"
+            for i in "${projetos[@]}"
+            do
+                echo "executando teste de mutacao em: ${i}"
+                $(Agent.BuildDirectory)/tools/dotnet-stryker --solution-path=$(System.DefaultWorkingDirectory)/${i} --reporters "['progress', '${{ parameters.reportType }}']" --ignore-methods  "${{ parameters.ignoreMethods }}" --max-concurrent-test-runners "${{ parameters.maxConcurrentTestRunners }}" --threshold-high "${{ parameters.thresholdHigh }}" --threshold-low "${{ parameters.thresholdLow }}" --threshold-break "${{ parameters.thresholdBreak }}" --mutation-level "${{ parameters.mutationLevel }}" --mutate "${{ parameters.mutateExcludeClass }}"
+            done    
+          fi           
+
+  - task: PublishMutationReport@0
+    displayName: 'Publish Mutation Test Report |  ${{ parameters.reportType }}'
+    inputs:
+      reportPattern: '**/mutation-report.${{ parameters.reportType }}'
